@@ -8,6 +8,10 @@ __pycache__/
 # Environment Variables
 .env
 
+# OAuth Credentials
+secrets/
+*.json
+
 # VS Code
 .vscode/
 
