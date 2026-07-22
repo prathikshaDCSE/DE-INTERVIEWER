@@ -1,0 +1,454 @@
+version: "1.0"
+last_updated: "2026-07-22"
+description: >
+  Master competency configuration for the DE-INTERVIEWER platform.
+  This file defines all technical competencies, evaluation weights,
+  interview coverage requirements, follow-up behavior, and expected
+  learning outcomes.
+
+competencies:
+
+  - id: C1
+    active: true
+    display_order: 1
+    category: Technical
+
+    name: SQL & Query Optimization
+
+    evaluation_weight: 15
+
+    minimum_questions: 2
+
+    target_proficiency: 70
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Follow-up
+      - Scenario
+
+    keywords:
+      - SQL
+      - JOIN
+      - GROUP BY
+      - HAVING
+      - Window Function
+      - CTE
+      - Index
+      - Execution Plan
+      - Query Optimization
+
+    skills:
+      - SQL
+      - Joins
+      - Aggregations
+      - Window Functions
+      - Common Table Expressions
+      - Indexing
+      - Query Optimization
+      - Execution Plans
+
+    expected_outcomes:
+      - Write efficient SQL queries
+      - Optimize slow queries
+      - Understand execution plans
+      - Use analytical SQL functions
+
+    description: >
+      Ability to write efficient SQL queries,
+      optimize execution plans,
+      understand joins,
+      indexing,
+      window functions,
+      aggregation,
+      query tuning,
+      and analytical SQL.
+
+
+  - id: C2
+    active: true
+    display_order: 2
+    category: Technical
+
+    name: Data Modeling & Warehousing
+
+    evaluation_weight: 15
+
+    minimum_questions: 2
+
+    target_proficiency: 70
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Scenario
+
+    keywords:
+      - Star Schema
+      - Snowflake
+      - Fact Table
+      - Dimension Table
+      - SCD
+      - Data Warehouse
+      - OLTP
+      - OLAP
+
+    skills:
+      - ER Modeling
+      - Star Schema
+      - Snowflake Schema
+      - Fact Tables
+      - Dimension Tables
+      - Slowly Changing Dimensions
+      - OLTP
+      - OLAP
+
+    expected_outcomes:
+      - Design scalable warehouse models
+      - Differentiate OLTP and OLAP
+      - Build dimensional models
+
+    description: >
+      Ability to design normalized and dimensional
+      data models,
+      understand warehouse concepts,
+      and build analytical data structures.
+
+
+  - id: C3
+    active: true
+    display_order: 3
+    category: Technical
+
+    name: ETL / ELT & Pipeline Design
+
+    evaluation_weight: 20
+
+    minimum_questions: 3
+
+    target_proficiency: 75
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Follow-up
+      - Case Study
+
+    keywords:
+      - ETL
+      - ELT
+      - Pipeline
+      - CDC
+      - Batch
+      - Incremental
+      - Transformation
+      - Scheduling
+
+    skills:
+      - ETL
+      - ELT
+      - CDC
+      - Incremental Loads
+      - Batch Processing
+      - Pipeline Monitoring
+      - Scheduling
+      - Recovery
+
+    expected_outcomes:
+      - Design scalable pipelines
+      - Explain incremental loading
+      - Handle pipeline failures
+
+    description: >
+      Ability to design,
+      implement,
+      monitor,
+      and optimize enterprise data pipelines.
+
+
+  - id: C4
+    active: true
+    display_order: 4
+    category: Technical
+
+    name: Big Data & Distributed Compute
+
+    evaluation_weight: 15
+
+    minimum_questions: 2
+
+    target_proficiency: 70
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Scenario
+
+    keywords:
+      - Spark
+      - Hadoop
+      - Partitioning
+      - Shuffle
+      - Distributed Computing
+      - Parallel Processing
+
+    skills:
+      - Apache Spark
+      - Hadoop
+      - Partitioning
+      - Shuffle
+      - Parallel Processing
+      - Distributed Systems
+
+    expected_outcomes:
+      - Explain distributed computing
+      - Optimize Spark jobs
+      - Understand partitioning
+
+    description: >
+      Understanding of distributed
+      processing frameworks,
+      scalability,
+      and big data concepts.
+
+
+  - id: C5
+    active: true
+    display_order: 5
+    category: Technical
+
+    name: Orchestration & Workflow
+
+    evaluation_weight: 10
+
+    minimum_questions: 2
+
+    target_proficiency: 70
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Scenario
+
+    keywords:
+      - Airflow
+      - Cloud Composer
+      - DAG
+      - Scheduling
+      - Retry
+      - Monitoring
+
+    skills:
+      - Airflow
+      - Cloud Composer
+      - DAG Design
+      - Scheduling
+      - Retry
+      - Monitoring
+
+    expected_outcomes:
+      - Design DAGs
+      - Configure scheduling
+      - Handle workflow failures
+
+    description: >
+      Ability to orchestrate
+      enterprise workflows
+      using Airflow
+      and Cloud Composer.
+
+
+  - id: C6
+    active: true
+    display_order: 6
+    category: Technical
+
+    name: Cloud & Infrastructure
+
+    evaluation_weight: 10
+
+    minimum_questions: 2
+
+    target_proficiency: 70
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Scenario
+
+    keywords:
+      - Google Cloud
+      - BigQuery
+      - Cloud Storage
+      - IAM
+      - Networking
+      - Compute Engine
+
+    skills:
+      - Google Cloud
+      - BigQuery
+      - Cloud Storage
+      - IAM
+      - Networking
+      - Compute
+
+    expected_outcomes:
+      - Understand cloud architecture
+      - Explain IAM
+      - Build secure cloud solutions
+
+    description: >
+      Knowledge of cloud services,
+      security,
+      networking,
+      storage,
+      and deployment.
+
+
+  - id: C7
+    active: true
+    display_order: 7
+    category: Technical
+
+    name: Data Quality & Governance
+
+    evaluation_weight: 8
+
+    minimum_questions: 1
+
+    target_proficiency: 65
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+
+    assessment_methods:
+      - Direct Question
+
+    keywords:
+      - Data Quality
+      - Metadata
+      - Lineage
+      - Governance
+      - Privacy
+      - Compliance
+
+    skills:
+      - Validation
+      - Metadata
+      - Lineage
+      - Governance
+      - Privacy
+      - Compliance
+
+    expected_outcomes:
+      - Ensure data quality
+      - Explain governance principles
+      - Apply validation techniques
+
+    description: >
+      Ability to maintain
+      trusted,
+      governed,
+      high-quality enterprise data.
+
+
+  - id: C8
+    active: true
+    display_order: 8
+    category: Technical
+
+    name: Programming & Software Engineering
+
+    evaluation_weight: 7
+
+    minimum_questions: 1
+
+    target_proficiency: 65
+
+    followup_enabled: true
+    max_followups: 2
+
+    difficulty_levels:
+      - Easy
+      - Medium
+      - Hard
+
+    assessment_methods:
+      - Direct Question
+      - Coding
+      - Follow-up
+
+    keywords:
+      - Python
+      - OOP
+      - REST
+      - Git
+      - Testing
+      - Design Patterns
+
+    skills:
+      - Python
+      - OOP
+      - Git
+      - REST API
+      - Unit Testing
+      - Debugging
+      - Design Patterns
+
+    expected_outcomes:
+      - Write maintainable Python code
+      - Apply software engineering principles
+      - Use Git effectively
+
+    description: >
+      Ability to develop,
+      test,
+      maintain,
+      and deploy
+      high-quality software solutions.
