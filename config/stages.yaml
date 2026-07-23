@@ -1,0 +1,337 @@
+version: "1.0"
+
+last_updated: "2026-07-22"
+
+description: >
+  Master interview workflow configuration for the DE-INTERVIEWER platform.
+  Defines the complete interview lifecycle, interview stages,
+  competency coverage, stage weights, adaptive questioning,
+  progression rules, and completion criteria used by the
+  LangGraph workflow engine and Interviewer Agent.
+  This file serves as the single source of truth for
+  interview workflow management.
+
+workflow:
+
+  name: Data Engineering Interview Workflow
+
+  active: true
+
+  total_stages: 5
+
+  progression: Sequential
+
+  allow_stage_skip: false
+
+  allow_stage_repeat: false
+
+  minimum_competencies_required: 6
+
+  target_competencies: 8
+
+  target_duration_minutes: 20-30
+
+  recommended_scored_questions: 8-12
+
+  maximum_followups_per_topic: 2
+
+  completion_condition: All interview stages completed
+
+stages:
+
+# ==========================================================
+# S0 - Intake & Warm-Up
+# ==========================================================
+
+  - id: S0
+
+    active: true
+
+    display_order: 1
+
+    name: Intake & Warm-Up
+
+    type: Initialization
+
+    scored: false
+
+    stage_weight: 0
+
+    objective: >
+      Welcome the candidate, collect interview information,
+      explain interview guidelines, establish context,
+      and make the candidate comfortable before beginning
+      the technical interview.
+
+    recommended_topics:
+      - Candidate Introduction
+      - Target Role
+      - Experience
+      - Skills
+      - Interview Guidelines
+
+    estimated_duration_minutes: 3
+
+    minimum_questions: 0
+
+    maximum_questions: 0
+
+    competencies: []
+
+    allow_followups: false
+
+    max_followups_per_question: 0
+
+    adaptive_questioning: false
+
+    entry_conditions:
+      - Candidate authenticated
+      - Candidate profile loaded
+
+    exit_conditions:
+      - Candidate intake completed
+      - Interview instructions acknowledged
+
+    success_criteria:
+      - Candidate ready for interview
+
+    next_stage: S1
+
+
+# ==========================================================
+# S1 - Fundamentals
+# ==========================================================
+
+  - id: S1
+
+    active: true
+
+    display_order: 2
+
+    name: Fundamentals
+
+    type: Technical Assessment
+
+    scored: true
+
+    stage_weight: 35
+
+    objective: >
+      Assess the candidate's core understanding of
+      Data Engineering fundamentals.
+
+    recommended_topics:
+      - SQL
+      - Data Modeling
+      - ETL vs ELT
+      - File Formats
+
+    estimated_duration_minutes: 10
+
+    minimum_questions: 3
+
+    maximum_questions: 5
+
+    competencies:
+      - C1
+      - C2
+      - C8
+
+    allow_followups: true
+
+    max_followups_per_question: 2
+
+    adaptive_questioning: true
+
+    entry_conditions:
+      - Intake stage completed
+
+    exit_conditions:
+      - Minimum questions completed
+
+    success_criteria:
+      - Fundamental competencies assessed
+
+    next_stage: S2
+
+
+# ==========================================================
+# S2 - Applied Systems
+# ==========================================================
+
+  - id: S2
+
+    active: true
+
+    display_order: 3
+
+    name: Applied Systems
+
+    type: Technical Assessment
+
+    scored: true
+
+    stage_weight: 35
+
+    objective: >
+      Evaluate practical knowledge of enterprise
+      Data Engineering systems and production workflows.
+
+    recommended_topics:
+      - Apache Spark
+      - Cloud Platforms
+      - Airflow
+      - Cost Optimization
+      - Distributed Systems
+
+    estimated_duration_minutes: 15
+
+    minimum_questions: 4
+
+    maximum_questions: 6
+
+    competencies:
+      - C3
+      - C4
+      - C5
+      - C6
+
+    allow_followups: true
+
+    max_followups_per_question: 2
+
+    adaptive_questioning: true
+
+    entry_conditions:
+      - Fundamentals completed
+
+    exit_conditions:
+      - Minimum questions completed
+
+    success_criteria:
+      - Applied engineering competencies assessed
+
+    next_stage: S3
+
+
+# ==========================================================
+# S3 - Scenario / Case Study
+# ==========================================================
+
+  - id: S3
+
+    active: true
+
+    display_order: 4
+
+    name: Scenario / Case Study
+
+    type: Advanced Assessment
+
+    scored: true
+
+    stage_weight: 20
+
+    objective: >
+      Evaluate the candidate's analytical thinking,
+      architecture design, trade-off analysis,
+      troubleshooting, and decision-making through
+      realistic enterprise scenarios.
+
+    recommended_topics:
+      - System Design
+      - ETL Pipeline Design
+      - Troubleshooting
+      - Architecture Decisions
+      - Trade-off Analysis
+
+    estimated_duration_minutes: 10
+
+    minimum_questions: 2
+
+    maximum_questions: 3
+
+    competencies:
+      - C1
+      - C2
+      - C3
+      - C4
+      - C5
+      - C6
+      - C7
+      - C8
+
+    allow_followups: true
+
+    max_followups_per_question: 2
+
+    adaptive_questioning: true
+
+    entry_conditions:
+      - Applied Systems completed
+
+    exit_conditions:
+      - Scenario assessment completed
+
+    success_criteria:
+      - Problem-solving ability evaluated
+
+    next_stage: S4
+
+
+# ==========================================================
+# S4 - Wrap-Up
+# ==========================================================
+
+  - id: S4
+
+    active: true
+
+    display_order: 5
+
+    name: Wrap-Up
+
+    type: Finalization
+
+    scored: false
+
+    stage_weight: 0
+
+    objective: >
+      Allow the candidate to ask questions,
+      conclude the interview professionally,
+      finalize evaluations,
+      generate reports,
+      and persist interview results.
+
+    recommended_topics:
+      - Candidate Questions
+      - Closing Remarks
+
+    estimated_duration_minutes: 2
+
+    minimum_questions: 0
+
+    maximum_questions: 0
+
+    competencies: []
+
+    allow_followups: false
+
+    max_followups_per_question: 0
+
+    adaptive_questioning: false
+
+    entry_conditions:
+      - Previous interview stages completed
+
+    exit_conditions:
+      - Interview completed
+      - Final evaluation generated
+      - Report generated
+      - Results stored in BigQuery
+
+    success_criteria:
+      - Interview successfully completed
+
+    next_stage: END

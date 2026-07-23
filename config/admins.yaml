@@ -1,0 +1,62 @@
+version: "1.0"
+
+last_updated: "2026-07-22"
+
+description: >
+  Bootstrap administrator configuration for the DE-INTERVIEWER platform.
+  This file contains the list of trusted administrator email addresses.
+  During authentication, the system first checks this file.
+  If the authenticated Google account email exists here,
+  the user is automatically assigned the Admin role.
+  Otherwise, role resolution continues using the BigQuery
+  user_roles table, and finally defaults to Candidate.
+
+authentication:
+
+  provider: Google OAuth 2.0
+
+  role_resolution_priority:
+
+    - admins.yaml
+    - user_roles_table
+    - default_candidate
+
+  email_matching:
+
+    case_sensitive: false
+
+    trim_whitespace: true
+
+    allow_duplicate_entries: false
+
+administrators:
+
+  - email: dhanapalprathiksha@gmail.com
+    full_name: Prathiksha Dhanapal
+    active: true
+    bootstrap_admin: true
+
+  - email: prathiksha.d2022cse@sece.ac.in
+    full_name: Technical Mentor
+    active: true
+    bootstrap_admin: true
+
+security:
+
+  allow_only_verified_google_accounts: true
+
+  backend_role_assignment_only: true
+
+  allow_manual_role_override: false
+
+  allow_self_promotion: false
+
+audit:
+
+  log_admin_login: true
+
+  log_admin_actions: true
+
+  log_role_resolution: true
+
+  log_invalid_admin_attempts: true
