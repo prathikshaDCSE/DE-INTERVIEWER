@@ -1,0 +1,384 @@
+version: "1.0"
+
+last_updated: "2026-07-22"
+
+description: >
+  Master Role-Based Access Control (RBAC) configuration for the
+  DE-INTERVIEWER platform.
+  This file defines all supported system roles,
+  their permissions,
+  access restrictions,
+  approval requirements,
+  and security rules.
+  User-role assignments are NOT stored here.
+  They are resolved using:
+    1. admins.yaml
+    2. BigQuery user_roles table
+    3. Default Candidate role
+
+rbac:
+
+  enabled: true
+
+  default_role: Candidate
+
+  backend_authorization_only: true
+
+  allow_self_role_selection: false
+
+  allow_role_escalation: false
+
+  approval_required_for_reviewer: true
+
+roles:
+
+# ==========================================================
+# Candidate
+# ==========================================================
+
+  - id: candidate
+
+    display_order: 1
+
+    active: true
+
+    name: Candidate
+
+    description: >
+      Default role assigned to all authenticated users.
+      Candidates can participate in interviews,
+      access their own reports,
+      and request reviewer access.
+
+    permissions:
+
+      interview:
+
+        start: true
+
+        resume: true
+
+        cancel: true
+
+        view_own_progress: true
+
+      reports:
+
+        view_own: true
+
+        download_own_pdf: true
+
+        view_other_reports: false
+
+      reviewer_request:
+
+        create: true
+
+        view_status: true
+
+        cancel_request: true
+
+      dashboard:
+
+        candidate_dashboard: true
+
+        reviewer_dashboard: false
+
+        admin_dashboard: false
+
+      analytics:
+
+        view: false
+
+      question_bank:
+
+        view: false
+
+        manage: false
+
+      users:
+
+        view: false
+
+        manage: false
+
+      roles:
+
+        assign: false
+
+        approve: false
+
+        reject: false
+
+      configuration:
+
+        view: false
+
+        modify: false
+
+      audit_logs:
+
+        view: false
+
+      system:
+
+        manage_platform: false
+
+# ==========================================================
+# Reviewer
+# ==========================================================
+
+  - id: reviewer
+
+    display_order: 2
+
+    active: true
+
+    name: Reviewer
+
+    description: >
+      Reviewers evaluate completed interviews,
+      compare candidates,
+      access dashboards,
+      and review interview reports.
+      Reviewer access requires Admin approval.
+
+    permissions:
+
+      interview:
+
+        start: false
+
+        resume: false
+
+        cancel: false
+
+        view_own_progress: false
+
+      reports:
+
+        view_own: true
+
+        download_own_pdf: true
+
+        view_candidate_reports: true
+
+        compare_candidates: true
+
+      dashboard:
+
+        candidate_dashboard: false
+
+        reviewer_dashboard: true
+
+        admin_dashboard: false
+
+      analytics:
+
+        view: true
+
+      reviewer_request:
+
+        create: false
+
+        view_status: false
+
+      question_bank:
+
+        view: true
+
+        manage: false
+
+      users:
+
+        view: false
+
+        manage: false
+
+      roles:
+
+        assign: false
+
+        approve: false
+
+        reject: false
+
+      configuration:
+
+        view: true
+
+        modify: false
+
+      audit_logs:
+
+        view: false
+
+      system:
+
+        manage_platform: false
+
+# ==========================================================
+# Admin
+# ==========================================================
+
+  - id: admin
+
+    display_order: 3
+
+    active: true
+
+    name: Admin
+
+    description: >
+      Platform administrator with full system access.
+      Admins manage users,
+      reviewer approvals,
+      question banks,
+      platform configuration,
+      analytics,
+      audit logs,
+      and overall system administration.
+
+    permissions:
+
+      interview:
+
+        start: true
+
+        resume: true
+
+        cancel: true
+
+        view_own_progress: true
+
+      reports:
+
+        view_own: true
+
+        download_own_pdf: true
+
+        view_candidate_reports: true
+
+        compare_candidates: true
+
+        regenerate_reports: true
+
+      dashboard:
+
+        candidate_dashboard: true
+
+        reviewer_dashboard: true
+
+        admin_dashboard: true
+
+      analytics:
+
+        view: true
+
+        export: true
+
+      reviewer_request:
+
+        view_all: true
+
+        approve: true
+
+        reject: true
+
+      users:
+
+        view: true
+
+        create: true
+
+        update: true
+
+        delete: true
+
+      roles:
+
+        assign: true
+
+        revoke: true
+
+        promote: true
+
+        demote: true
+
+      question_bank:
+
+        view: true
+
+        create: true
+
+        update: true
+
+        delete: true
+
+        import: true
+
+        export: true
+
+      configuration:
+
+        view: true
+
+        modify: true
+
+      audit_logs:
+
+        view: true
+
+        export: true
+
+      system:
+
+        manage_platform: true
+
+        manage_prompt_versions: true
+
+        manage_model_versions: true
+
+        manage_thresholds: true
+
+        manage_competencies: true
+
+        manage_workflow: true
+
+security:
+
+  enforce_backend_authorization: true
+
+  verify_permissions_every_request: true
+
+  deny_by_default: true
+
+  log_permission_denied: true
+
+  least_privilege_access: true
+
+role_resolution:
+
+  priority:
+
+    - admins.yaml
+
+    - user_roles_table
+
+    - default_candidate
+
+  reviewer_requires_admin_approval: true
+
+  candidate_is_default_role: true
+
+audit:
+
+  log_role_assignments: true
+
+  log_role_changes: true
+
+  log_permission_denied: true
+
+  log_reviewer_approvals: true
+
+  log_reviewer_rejections: true

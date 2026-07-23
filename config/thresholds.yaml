@@ -1,0 +1,449 @@
+version: "1.0"
+
+last_updated: "2026-07-22"
+
+description: >
+  Master configuration file for interview scoring,
+  adaptive questioning,
+  hiring decisions,
+  confidence scoring,
+  AI model configuration,
+  validation rules,
+  reproducibility controls,
+  report generation,
+  audit settings,
+  calibration,
+  and privacy policies.
+  This file serves as the single source of truth
+  for configurable business rules within the
+  DE-INTERVIEWER platform.
+
+# ==========================================================
+# Interview Configuration
+# ==========================================================
+
+interview:
+
+  minimum_competencies_required: 6
+
+  target_competencies: 8
+
+  minimum_scored_questions: 8
+
+  maximum_scored_questions: 12
+
+  maximum_followups_per_topic: 2
+
+  maximum_followups_per_question: 2
+
+  interview_duration_minutes:
+
+    minimum: 20
+
+    maximum: 30
+
+
+# ==========================================================
+# Adaptive Questioning
+# ==========================================================
+
+adaptive_questioning:
+
+  enabled: true
+
+  followup_threshold:
+
+    score_less_than_or_equal: 2
+
+  advance_threshold:
+
+    score_greater_than_or_equal: 4
+
+  maximum_followups: 2
+
+  allow_followups_for_partial_answers: true
+
+  allow_followups_for_incorrect_answers: true
+
+
+# ==========================================================
+# Per Answer Scoring Scale
+# ==========================================================
+
+answer_scoring:
+
+  minimum_score: 0
+
+  maximum_score: 5
+
+  score_scale:
+
+    "0":
+
+      label: No Answer
+
+      description: >
+        Blank answer,
+        irrelevant response,
+        or "I don't know".
+
+    "1":
+
+      label: Very Weak
+
+      description: >
+        Major misconceptions,
+        incorrect understanding,
+        or mostly incorrect answer.
+
+    "2":
+
+      label: Partial
+
+      description: >
+        Some correct concepts,
+        but significant knowledge gaps remain.
+
+    "3":
+
+      label: Meets Expectations
+
+      description: >
+        Acceptable answer meeting
+        expected competency level.
+
+    "4":
+
+      label: Strong
+
+      description: >
+        Thorough answer demonstrating
+        practical understanding
+        and good technical depth.
+
+    "5":
+
+      label: Exceptional
+
+      description: >
+        Expert-level answer demonstrating
+        real-world experience,
+        trade-off analysis,
+        optimization,
+        and architectural thinking.
+
+
+# ==========================================================
+# Competency Scoring
+# ==========================================================
+
+competency_scoring:
+
+  formula: "(average_score / maximum_score) * 100"
+
+  minimum_score: 0
+
+  maximum_score: 100
+
+
+# ==========================================================
+# Soft Skill Evaluation
+# ==========================================================
+
+soft_skills:
+
+  categories:
+
+    - Communication Clarity
+
+    - Structured Thinking
+
+    - Problem Solving
+
+    - Handling Ambiguity
+
+    - Follow-up Quality
+
+  formula: "(average_score / maximum_score) * 100"
+
+
+# ==========================================================
+# Overall Scoring
+# ==========================================================
+
+overall_scoring:
+
+  technical_weight: 0.85
+
+  soft_skill_weight: 0.15
+
+  formula: >
+    Overall Score =
+    (0.85 × Technical Score)
+    +
+    (0.15 × Soft Skill Score)
+
+
+# ==========================================================
+# Hiring Recommendation
+# ==========================================================
+
+decision_thresholds:
+
+  SELECT:
+
+    minimum_score: 75
+
+    maximum_score: 100
+
+    description: >
+      Candidate demonstrates strong technical competency
+      and should advance to the next interview stage.
+
+  HOLD:
+
+    minimum_score: 60
+
+    maximum_score: 74
+
+    description: >
+      Candidate requires additional evaluation
+      before a final hiring decision.
+
+  REJECT:
+
+    minimum_score: 0
+
+    maximum_score: 59
+
+    description: >
+      Candidate currently does not meet
+      the expected competency requirements.
+
+
+# ==========================================================
+# Confidence Scoring
+# ==========================================================
+
+confidence_scoring:
+
+  factors:
+
+    competency_coverage: true
+
+    question_count: true
+
+    followup_completion: true
+
+    transcript_completeness: true
+
+    evidence_sufficiency: true
+
+    answer_quality: true
+
+  confidence_levels:
+
+    HIGH:
+
+      minimum_percentage: 85
+
+    MEDIUM:
+
+      minimum_percentage: 70
+
+    LOW:
+
+      minimum_percentage: 0
+
+
+# ==========================================================
+# Gemini Configuration
+# ==========================================================
+
+gemini:
+
+  model: gemini-3.6-flash
+
+  temperature: 0
+
+  top_p: 0
+
+  top_k: 1
+
+  max_output_tokens: 2048
+
+  structured_output: true
+
+  deterministic_scoring: true
+
+  response_format:
+
+    type: json
+
+  retry:
+
+    maximum_attempts: 3
+
+    exponential_backoff: true
+
+  timeouts:
+
+    gemini_request_seconds: 60
+
+    report_generation_seconds: 30
+
+
+# ==========================================================
+# Reproducibility
+# ==========================================================
+
+reproducibility:
+
+  enabled: true
+
+  prompt_version: "1.0"
+
+  scoring_configuration_version: "1.0"
+
+  store_model_version: true
+
+  store_prompt_version: true
+
+  validate_scoring_consistency: true
+
+  deterministic_execution: true
+
+
+# ==========================================================
+# Validation Rules
+# ==========================================================
+
+validation:
+
+  allow_empty_answers: true
+
+  empty_answer_score: 0
+
+  minimum_answer_length: 10
+
+  maximum_answer_length: 10000
+
+  detect_prompt_injection: true
+
+  detect_role_escalation: true
+
+  detect_score_manipulation: true
+
+  detect_jailbreak_attempts: true
+
+  detect_off_topic_answers: true
+
+  detect_spam: true
+
+
+# ==========================================================
+# Report Generation
+# ==========================================================
+
+reports:
+
+  generate_pdf: true
+
+  include_candidate_information: true
+
+  include_interview_metadata: true
+
+  include_overall_score: true
+
+  include_decision: true
+
+  include_competency_breakdown: true
+
+  include_soft_skill_breakdown: true
+
+  include_strengths: true
+
+  include_weaknesses: true
+
+  include_recommendations: true
+
+  include_confidence_score: true
+
+  include_question_log: true
+
+  include_evidence_based_rationale: true
+
+
+# ==========================================================
+# Audit Logging
+# ==========================================================
+
+audit_logging:
+
+  enabled: true
+
+  events:
+
+    - LOGIN
+
+    - LOGOUT
+
+    - INTERVIEW_STARTED
+
+    - INTERVIEW_COMPLETED
+
+    - REPORT_GENERATED
+
+    - REQUEST_REVIEWER_ACCESS
+
+    - REVIEWER_APPROVED
+
+    - REVIEWER_REJECTED
+
+    - ROLE_CHANGED
+
+    - REPORT_VIEWED
+
+    - ACCESS_DENIED
+
+    - SYSTEM_ERROR
+
+
+# ==========================================================
+# Calibration Testing
+# ==========================================================
+
+calibration:
+
+  enabled: true
+
+  personas:
+
+    - Strong Candidate
+
+    - Average Candidate
+
+    - Weak Candidate
+
+  validate_score_stability: true
+
+  validate_decision_stability: true
+
+  validate_threshold_behavior: true
+
+
+# ==========================================================
+# Privacy Configuration
+# ==========================================================
+
+privacy:
+
+  session_only_mode: true
+
+  retention_mode: true
+
+  allow_candidate_deletion: true
+
+  restrict_report_access: true
+
+  least_privilege_access: true
