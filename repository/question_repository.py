@@ -365,7 +365,14 @@ class QuestionRepository:
             exclude_used: If True, exclude questions already marked used.
 
         Returns:
-            A question dictionary or None when no match is found.
+            Question | None
+
+            A question dictionary matching all filters, or None when no
+            matching question exists in the repository for the requested
+            competency, stage, difficulty, candidate level, and experience.
+            A None return is not an error: it signals that the caller
+            (e.g. InterviewService) should decide how to proceed, such as
+            falling back to a generated question.
         """
         self._ensure_loaded()
         self._validate_query_values(
@@ -418,7 +425,14 @@ class QuestionRepository:
             followup_number: 1 or 2.
 
         Returns:
-            The follow-up question string, or None.
+            str | None
+
+            The follow-up question string, or None. None means either
+            that no question in the repository matches the requested
+            question_id, or that the matching question has no follow-up
+            question configured for the requested slot. Callers should
+            treat both cases the same way: there is no follow-up question
+            to ask.
         """
         self._ensure_loaded()
         if followup_number not in {1, 2}:
@@ -429,11 +443,29 @@ class QuestionRepository:
             self.questions_df[COLUMN_QUESTION_ID] == question_id_clean
         ]
         if matches.empty:
-            raise QuestionNotFoundError(f"Question ID not found: {question_id}")
+            self.logger.info(
+                "No question found matching question_id=%s for follow-up lookup",
+                question_id_clean,
+            )
+            return None
 
         column_name = COLUMN_FOLLOWUP_1 if followup_number == 1 else COLUMN_FOLLOWUP_2
         value = matches.iloc[0].get(column_name)
         return None if pd.isna(value) else str(value).strip()
+
+    def register_dynamic_question(self, question_record: dict[str, Any]) -> None:
+        """
+        Register a dynamically generated AI question in memory so downstream services
+        (such as EvaluationService) can retrieve its record by stage and question_id.
+        """
+        if not isinstance(question_record, dict) or not question_record.get("question_id"):
+            raise QuestionBankError("Dynamic question record must be a dict containing 'question_id'")
+
+        with self._session_lock:
+            if not hasattr(self, "_dynamic_questions"):
+                self._dynamic_questions: dict[str, dict[str, Any]] = {}
+            q_id = str(question_record["question_id"]).strip()
+            self._dynamic_questions[q_id] = question_record
 
     def get_questions_by_stage(self, stage: str) -> list[dict[str, Any]]:
         """
@@ -444,7 +476,13 @@ class QuestionRepository:
             raise QuestionBankError(f"Invalid stage value: {stage}")
 
         filtered = self._filter_questions(stage=stage, active_only=True, exclude_used=False)
-        return self._rows_to_list(filtered)
+        result = self._rows_to_list(filtered)
+        if hasattr(self, "_dynamic_questions"):
+            with self._session_lock:
+                for q in self._dynamic_questions.values():
+                    if q.get("stage") == stage:
+                        result.append(q)
+        return result
 
     def get_questions_by_competency(self, competency: str) -> list[dict[str, Any]]:
         """
@@ -509,10 +547,11 @@ class QuestionRepository:
         self._ensure_loaded()
         question_id_clean = str(question_id).strip()
 
-        if not self.questions_df[COLUMN_QUESTION_ID].eq(question_id_clean).any():
-            raise QuestionNotFoundError(f"Question ID not found: {question_id}")
-
         with self._session_lock:
+            is_dynamic = hasattr(self, "_dynamic_questions") and question_id_clean in self._dynamic_questions
+            if not is_dynamic and not self.questions_df[COLUMN_QUESTION_ID].eq(question_id_clean).any():
+                raise QuestionNotFoundError(f"Question ID not found: {question_id}")
+
             self.used_questions.add(question_id_clean)
         self.logger.debug("Marked question %s as used", question_id_clean)
 

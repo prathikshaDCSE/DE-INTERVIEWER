@@ -21,3 +21,4 @@ secrets/
 # OS Files
 .DS_Store
 Thumbs.db
+.pytest_cache/

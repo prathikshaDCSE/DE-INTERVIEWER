@@ -33,6 +33,7 @@ import pytest
 
 from exceptions.evaluation_exceptions import EvaluationServiceError
 from exceptions.interview_exceptions import (
+    InterviewAIError,
     InterviewConfigurationError,
     InterviewEvaluationError,
     InterviewPromptError,
@@ -44,7 +45,7 @@ from exceptions.interview_exceptions import (
 )
 from exceptions.gemini_exceptions import GeminiServiceError
 from models.evaluation_result import EvaluationResult
-from models.interview_session import InterviewStatus
+from models.interview_session import AskedQuestion, InterviewStatus
 from repository.question_repository import QuestionBankError
 from services.evaluation_service import EvaluationService
 from services.gemini_service import GeminiService
@@ -212,15 +213,53 @@ def prompt_service():
             metadata={},
         )
 
+    def _dynamic_question_prompt(*args, **kwargs):
+        return PromptResult(
+            prompt="DYNAMIC QUESTION PROMPT TEXT",
+            prompt_type="DYNAMIC_QUESTION",
+            version="1.0",
+            estimated_tokens=12,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            metadata={},
+        )
+
+    def _dynamic_followup_prompt(*args, **kwargs):
+        return PromptResult(
+            prompt="DYNAMIC FOLLOWUP PROMPT TEXT",
+            prompt_type="DYNAMIC_FOLLOWUP",
+            version="1.0",
+            estimated_tokens=10,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            metadata={},
+        )
+
     service.build_interview_prompt.side_effect = _interview_prompt
     service.build_followup_prompt.side_effect = _followup_prompt
+    service.build_dynamic_question_prompt.side_effect = _dynamic_question_prompt
+    service.build_dynamic_followup_prompt.side_effect = _dynamic_followup_prompt
     service.reload_configuration.return_value = None
     return service
 
 
 @pytest.fixture
 def gemini_service():
-    return MagicMock(spec=GeminiService)
+    service = MagicMock(spec=GeminiService)
+    service._max_retries = 3
+    service.generate_json.return_value = {
+        "question": "AI Generated Question?",
+        "competency": "C1",
+        "difficulty": "Medium",
+        "estimated_time": 5,
+        "learning_objective": "Dynamic objective",
+        "business_context": "Dynamic context",
+        "expected_concepts": ["concept 1"],
+        "evaluator_notes": "Dynamic notes",
+        "positive_indicators": ["pos"],
+        "negative_indicators": ["neg"],
+        "missing_concept": "missing concept 1",
+        "followup_reason": "needs depth",
+    }
+    return service
 
 
 @pytest.fixture
@@ -422,11 +461,12 @@ class TestStartInterview:
         assert stats["interviews_started"] == 1
         assert stats["questions_asked"] == 1
 
-    def test_start_interview_raises_question_error_when_no_question_found(
-        self, interview_service, candidate
+    def test_start_interview_raises_ai_error_when_ai_generation_fails(
+        self, interview_service, candidate, gemini_service
     ):
         interview_service.question_repository.get_question.return_value = None
-        with pytest.raises(InterviewQuestionError):
+        gemini_service.generate_json.side_effect = GeminiServiceError("gemini down")
+        with pytest.raises(InterviewAIError):
             interview_service.start_interview(candidate)
 
     def test_start_interview_translates_repository_error(
@@ -1052,3 +1092,216 @@ class TestThreadSafety:
         assert len(interview_service._sessions) == 10
         stats = interview_service.get_statistics()
         assert stats["interviews_started"] == 10
+
+
+# ============================================================
+# AI Fallback, Validation, and Logging
+# ============================================================
+
+
+class TestAIFallbackAndValidation:
+    def test_repository_question_exists_uses_repo_question(
+        self, interview_service, candidate, question_repository
+    ):
+        question_repository.get_question.return_value = make_question_record(question_id="Q100")
+        res = interview_service.start_interview(candidate)
+        assert res["question_id"] == "Q100"
+        session = interview_service._sessions[res["session_id"]]
+        assert session.question_source == "REPOSITORY"
+
+    def test_repository_question_missing_uses_ai_generated_question(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        question_repository.get_question.return_value = None
+        gemini_service.generate_json.return_value = {
+            "question": "Dynamic AI Question?",
+            "competency": "C1",
+            "difficulty": "Medium",
+            "estimated_time": 5,
+        }
+        res = interview_service.start_interview(candidate)
+        assert res["question"] == "INTERVIEW PROMPT TEXT"
+        session = interview_service._sessions[res["session_id"]]
+        assert session.question_source == "AI_GENERATED"
+        assert session.current_question.question_record["question"] == "Dynamic AI Question?"
+
+    def test_repository_followup_exists_uses_repo_followup(
+        self, interview_service, candidate, question_repository
+    ):
+        session_id = interview_service.start_interview(candidate)["session_id"]
+        question_repository.get_followup_question.return_value = "Repo followup question text"
+        interview_service.evaluation_service.evaluate_answer.return_value = make_evaluation_result(
+            score=1,
+            next_action="FOLLOWUP",
+            needs_followup=True,
+            missing_concept="LEFT JOIN",
+        )
+        res = interview_service.submit_answer(session_id, "my answer")
+        assert res["next_action"] == "FOLLOWUP"
+        assert res["question"] == "FOLLOWUP PROMPT TEXT"
+        session = interview_service._sessions[session_id]
+        assert session.question_source == "REPOSITORY"
+
+    def test_repository_followup_missing_uses_ai_generated_followup(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        session_id = interview_service.start_interview(candidate)["session_id"]
+        question_repository.get_followup_question.return_value = None
+        gemini_service.generate_json.return_value = {
+            "question": "AI Generated Followup Question?",
+            "missing_concept": "LEFT JOIN",
+            "followup_reason": "Needs clarification",
+        }
+        interview_service.evaluation_service.evaluate_answer.return_value = make_evaluation_result(
+            score=1,
+            next_action="FOLLOWUP",
+            needs_followup=True,
+            missing_concept="LEFT JOIN",
+        )
+        res = interview_service.submit_answer(session_id, "my answer")
+        assert res["next_action"] == "FOLLOWUP"
+        assert res["question"] == "AI Generated Followup Question?"
+        session = interview_service._sessions[session_id]
+        assert session.question_source == "AI_GENERATED"
+
+    def test_generated_question_validation_failure_raises_ai_error(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        question_repository.get_question.return_value = None
+        gemini_service.generate_json.return_value = {"invalid": "missing fields"}
+        with pytest.raises(InterviewAIError):
+            interview_service.start_interview(candidate)
+
+    def test_generated_question_competency_mismatch_raises_ai_error(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        question_repository.get_question.return_value = None
+        gemini_service.generate_json.return_value = {
+            "question": "Some Question?",
+            "competency": "WRONG_COMP",
+            "difficulty": "Medium",
+            "estimated_time": 5,
+        }
+        with pytest.raises(InterviewAIError):
+            interview_service.start_interview(candidate)
+
+    def test_generated_followup_validation_failure_raises_ai_error(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        session_id = interview_service.start_interview(candidate)["session_id"]
+        question_repository.get_followup_question.return_value = None
+        gemini_service.generate_json.return_value = {"question": ""}
+        interview_service.evaluation_service.evaluate_answer.return_value = make_evaluation_result(
+            score=1,
+            next_action="FOLLOWUP",
+            needs_followup=True,
+            missing_concept="LEFT JOIN",
+        )
+        with pytest.raises(InterviewAIError):
+            interview_service.submit_answer(session_id, "my answer")
+
+    def test_duplicate_generated_question_prevention(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        question_repository.get_question.return_value = None
+        gemini_service.generate_json.side_effect = [
+            {
+                "question": "Already Asked Question?",
+                "competency": "C1",
+                "difficulty": "Medium",
+                "estimated_time": 5,
+            },
+            {
+                "question": "Brand New Question?",
+                "competency": "C1",
+                "difficulty": "Medium",
+                "estimated_time": 5,
+            },
+        ]
+        session = interview_service._create_session(candidate)
+        interview_service._sessions[session.session_id] = session
+        interview_service._load_stage(session, "S1")
+        session.asked_questions.append(
+            AskedQuestion(
+                question_id="Q_PREV",
+                competency="C1",
+                stage="S1",
+                difficulty="Medium",
+                question_record={"question": "Already Asked Question?"},
+                asked_at=datetime.now(timezone.utc),
+            )
+        )
+        interview_service._select_question(session)
+        assert session.current_question.question_record["question"] == "Brand New Question?"
+
+    def test_logging_includes_all_required_extra_fields(
+        self, interview_service, candidate, question_repository, gemini_service
+    ):
+        logger_mock = MagicMock()
+        interview_service.logger = logger_mock
+
+        # 1. Repository question used
+        question_repository.get_question.return_value = make_question_record(question_id="Q1")
+        res = interview_service.start_interview(candidate)
+        repo_call = next(c for c in logger_mock.info.call_args_list if c[0][0] == "repository_question_used")
+        extra1 = repo_call[1]["extra"]
+        assert extra1["session_id"] == res["session_id"]
+        assert extra1["competency"] == "C1"
+        assert extra1["stage"] == "S1"
+        assert extra1["difficulty"] == "Medium"
+        assert "request_id" in extra1
+
+        # 2. AI generated question used
+        logger_mock.reset_mock()
+        question_repository.get_question.return_value = None
+        gemini_service.generate_json.return_value = {
+            "question": "Generated Question?",
+            "competency": "C1",
+            "difficulty": "Medium",
+            "estimated_time": 5,
+        }
+        res2 = interview_service.start_interview(candidate)
+        gen_call = next(c for c in logger_mock.info.call_args_list if c[0][0] == "generated_question_used")
+        extra2 = gen_call[1]["extra"]
+        assert extra2["session_id"] == res2["session_id"]
+        assert extra2["competency"] == "C1"
+        assert extra2["stage"] == "S1"
+        assert extra2["difficulty"] == "Medium"
+        assert "request_id" in extra2
+
+        # 3. Repository followup used
+        logger_mock.reset_mock()
+        session_id = res["session_id"]
+        interview_service._sessions[session_id].status = InterviewStatus.IN_PROGRESS
+        question_repository.get_followup_question.return_value = "Repo followup text"
+        interview_service.evaluation_service.evaluate_answer.return_value = make_evaluation_result(
+            score=1,
+            next_action="FOLLOWUP",
+            needs_followup=True,
+            missing_concept="X",
+        )
+        interview_service.submit_answer(session_id, "ans")
+        repo_f_call = next(c for c in logger_mock.info.call_args_list if c[0][0] == "repository_followup_used")
+        extra3 = repo_f_call[1]["extra"]
+        assert extra3["session_id"] == session_id
+        assert extra3["competency"] == "C1"
+        assert extra3["stage"] == "S1"
+        assert extra3["difficulty"] == "Medium"
+        assert "request_id" in extra3
+
+        # 4. AI generated followup used
+        logger_mock.reset_mock()
+        question_repository.get_followup_question.return_value = None
+        gemini_service.generate_json.return_value = {
+            "question": "AI Generated Followup?",
+            "missing_concept": "X",
+            "followup_reason": "needs depth",
+        }
+        interview_service.submit_answer(session_id, "ans")
+        gen_f_call = next(c for c in logger_mock.info.call_args_list if c[0][0] == "generated_followup_used")
+        extra4 = gen_f_call[1]["extra"]
+        assert extra4["session_id"] == session_id
+        assert extra4["competency"] == "C1"
+        assert extra4["stage"] == "S1"
+        assert extra4["difficulty"] == "Medium"
+        assert "request_id" in extra4

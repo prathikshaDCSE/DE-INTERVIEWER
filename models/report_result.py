@@ -175,6 +175,11 @@ class ReportResult:
     request_id: str
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    @property
+    def report_id(self) -> str:
+        """Alias for report ID derived from metadata or request_id."""
+        return str(self.metadata.get("report_id", self.request_id))
+
     def __post_init__(self) -> None:
         # Frozen dataclass: bypass __setattr__ to coerce any
         # list-typed inputs into tuples so instances stay immutable

@@ -97,9 +97,8 @@ class EvaluationResult:
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        # Frozen dataclass: bypass __setattr__ to coerce any
-        # list-typed inputs into tuples so instances stay immutable
-        # even if a caller passed lists.
+        object.__setattr__(self, "score", int(float(self.score)))
+        object.__setattr__(self, "confidence", int(float(self.confidence)))
         object.__setattr__(self, "strengths", tuple(self.strengths))
         object.__setattr__(self, "weaknesses", tuple(self.weaknesses))
         object.__setattr__(self, "missing_concepts", tuple(self.missing_concepts))

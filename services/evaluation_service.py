@@ -278,6 +278,7 @@ class EvaluationService:
         stage: str,
         difficulty: str,
         current_followup_count: int = 0,
+        question_record: Mapping[str, Any] | None = None,
         **gemini_overrides: Any,
     ) -> EvaluationResult:
         """
@@ -312,6 +313,9 @@ class EvaluationService:
                 ``determine_followup`` to enforce
                 ``adaptive_questioning.maximum_followups``. Defaults
                 to ``0`` (first answer, no follow-ups yet).
+            question_record: Optional question dictionary to evaluate
+                against directly (e.g. for dynamic or AI questions not in
+                ``QuestionRepository``).
             **gemini_overrides: Forwarded to
                 ``GeminiService.generate_json()`` (e.g.
                 ``temperature=0``) to override per-call generation
@@ -342,14 +346,15 @@ class EvaluationService:
                 difficulty=difficulty,
             )
 
-            question_record = self._load_question(
+            resolved_question_record = self._load_question(
                 question_id=question_id,
                 competency=competency,
                 stage=stage,
                 difficulty=difficulty,
+                question_record=question_record,
             )
 
-            prompt_result = self._build_prompt(question_record, candidate_answer)
+            prompt_result = self._build_prompt(resolved_question_record, candidate_answer)
 
             raw_evaluation = self._call_gemini(
                 prompt_result.prompt, request_id=request_id, **gemini_overrides
@@ -357,7 +362,7 @@ class EvaluationService:
 
             result = self._normalize_response(
                 raw_evaluation,
-                question_record=question_record,
+                question_record=resolved_question_record,
                 current_followup_count=current_followup_count,
                 request_id=request_id,
             )
@@ -675,7 +680,8 @@ class EvaluationService:
         competency: str,
         stage: str,
         difficulty: str,
-    ) -> dict[str, Any]:
+        question_record: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         """
         Load and cross-validate the question being answered.
 
@@ -695,36 +701,53 @@ class EvaluationService:
                 competency or difficulty does not match the supplied
                 values.
         """
+        if question_record is not None:
+            if question_record.get("competency") != competency:
+                raise EvaluationValidationError(
+                    "competency mismatch: requested="
+                    f"{competency} question_record="
+                    f"{question_record.get('competency')}",
+                    field="competency",
+                )
+            if question_record.get("difficulty") != difficulty:
+                raise EvaluationValidationError(
+                    "difficulty mismatch: requested="
+                    f"{difficulty} question_record="
+                    f"{question_record.get('difficulty')}",
+                    field="difficulty",
+                )
+            return question_record
+
         try:
             stage_questions = self.question_repository.get_questions_by_stage(stage)
         except QuestionBankError as exc:
             raise self._translate_repository_exception(exc) from exc
 
-        question_record = next(
+        found_record = next(
             (q for q in stage_questions if q.get("question_id") == question_id),
             None,
         )
-        if question_record is None:
+        if found_record is None:
             raise EvaluationRepositoryError(
                 f"Question not found: question_id={question_id} stage={stage}"
             )
 
-        if question_record.get("competency") != competency:
+        if found_record.get("competency") != competency:
             raise EvaluationValidationError(
                 "competency mismatch: requested="
                 f"{competency} question_record="
-                f"{question_record.get('competency')}",
+                f"{found_record.get('competency')}",
                 field="competency",
             )
-        if question_record.get("difficulty") != difficulty:
+        if found_record.get("difficulty") != difficulty:
             raise EvaluationValidationError(
                 "difficulty mismatch: requested="
                 f"{difficulty} question_record="
-                f"{question_record.get('difficulty')}",
+                f"{found_record.get('difficulty')}",
                 field="difficulty",
             )
 
-        return question_record
+        return found_record
 
     def _build_prompt(
         self,

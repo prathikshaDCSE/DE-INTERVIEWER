@@ -450,11 +450,14 @@ class TestRetryBehavior:
 
 
 class TestTimeout:
-    def test_slow_call_raises_timeout_error(self, fake_client: MagicMock) -> None:
+    def test_slow_call_raises_timeout_error(
+        self, fake_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.undo()
         import time as real_time
 
         def slow_generate(*args, **kwargs):
-            real_time.sleep(0.3)
+            real_time.sleep(0.15)
             return make_sdk_response()
 
         fake_client.models.generate_content.side_effect = slow_generate

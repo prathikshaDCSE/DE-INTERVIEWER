@@ -116,6 +116,19 @@ class PromptService:
     * Estimate token usage and cost.
     * Report in-memory usage statistics.
 
+    This includes prompts used for two distinct purposes:
+
+    * "Static" prompts that present a ``QuestionRepository``-authored
+      question/follow-up to the candidate in a natural, framed way
+      (``build_interview_prompt``, ``build_followup_prompt``).
+    * "Dynamic" prompts that ask Gemini to *generate* a brand-new
+      question/follow-up when ``QuestionRepository`` has no matching
+      entry (``build_dynamic_question_prompt``,
+      ``build_dynamic_followup_prompt``). ``PromptService`` only
+      builds these prompts; it never calls Gemini itself and never
+      decides whether repository content exists in the first place --
+      that decision belongs entirely to ``InterviewService``.
+
     Configuration ownership: competencies, stages, and scoring/
     adaptive-questioning thresholds are never re-parsed here.
     ``QuestionRepository`` already loads and validates
@@ -139,12 +152,25 @@ class PromptService:
 
     PROMPT_TYPE_REPORT = "REPORT"
 
+    # Dynamic (AI-generation) prompt types. These are built by this
+    # service exactly like every other prompt type -- rendered from a
+    # template, validated, token-estimated, and logged -- but their
+    # rendered text is intended to be sent to
+    # ``GeminiService.generate_json()`` by ``InterviewService`` to
+    # produce a *new* question/follow-up, rather than to frame an
+    # already-authored one.
+    PROMPT_TYPE_DYNAMIC_QUESTION = "DYNAMIC_QUESTION"
+
+    PROMPT_TYPE_DYNAMIC_FOLLOWUP = "DYNAMIC_FOLLOWUP"
+
     VALID_PROMPT_TYPES = frozenset(
         {
             PROMPT_TYPE_INTERVIEW,
             PROMPT_TYPE_EVALUATION,
             PROMPT_TYPE_FOLLOWUP,
             PROMPT_TYPE_REPORT,
+            PROMPT_TYPE_DYNAMIC_QUESTION,
+            PROMPT_TYPE_DYNAMIC_FOLLOWUP,
         }
     )
 
@@ -177,6 +203,8 @@ class PromptService:
     #   prompts/evaluation_prompt.md
     #   prompts/followup_prompt.md
     #   prompts/report_prompt.md
+    #   prompts/dynamic_question_prompt.md
+    #   prompts/dynamic_followup_prompt.md
     DEFAULT_TEMPLATES_DIR = "prompts"
 
     TEMPLATE_FILENAMES: dict[str, str] = {
@@ -184,6 +212,8 @@ class PromptService:
         PROMPT_TYPE_EVALUATION: "evaluation_prompt.md",
         PROMPT_TYPE_FOLLOWUP: "followup_prompt.md",
         PROMPT_TYPE_REPORT: "report_prompt.md",
+        PROMPT_TYPE_DYNAMIC_QUESTION: "dynamic_question_prompt.md",
+        PROMPT_TYPE_DYNAMIC_FOLLOWUP: "dynamic_followup_prompt.md",
     }
 
     # Used only if a template file is missing or unreadable, so the
@@ -274,6 +304,65 @@ class PromptService:
             "## Confidence Explanation\n\n"
             "Every section must contain real content grounded only in the "
             "input above -- no fabricated details, no placeholder text."
+        ),
+        PROMPT_TYPE_DYNAMIC_QUESTION: (
+            "You are the Question Generation Agent for a Data Engineering "
+            "interview platform. QuestionRepository has no pre-authored "
+            "question matching the requested profile, so you must generate "
+            "one. Return only the required JSON object, no other text.\n\n"
+            "Competency: {{competency}}\n"
+            "Competency Description: {{competency_description}}\n"
+            "Stage: {{stage}}\n"
+            "Stage Objective: {{stage_objective}}\n"
+            "Difficulty: {{difficulty}}\n"
+            "Candidate Experience: {{candidate_experience}} years\n"
+            "Candidate Target Role: {{candidate_role}}\n"
+            "Topics Already Asked: {{already_asked_topics}}\n"
+            "Question IDs Already Asked: {{question_history}}\n\n"
+            "Generate exactly one new, original question for this "
+            "competency and difficulty that does not duplicate any topic "
+            "already asked. Never embed the expected answer in the "
+            "question text. \"competency\" and \"difficulty\" in your "
+            "output must exactly match the requested values above.\n\n"
+            "Return only this JSON object:\n"
+            "{\n"
+            '  "question": "",\n'
+            '  "competency": "",\n'
+            '  "difficulty": "",\n'
+            '  "estimated_time": 0,\n'
+            '  "learning_objective": "",\n'
+            '  "business_context": "",\n'
+            '  "expected_concepts": [],\n'
+            '  "evaluator_notes": "",\n'
+            '  "positive_indicators": [],\n'
+            '  "negative_indicators": []\n'
+            "}"
+        ),
+        PROMPT_TYPE_DYNAMIC_FOLLOWUP: (
+            "You are the Follow-up Question Generation Agent for a Data "
+            "Engineering interview platform. QuestionRepository has no "
+            "pre-authored follow-up for this question at this level, so "
+            "you must generate one. Return only the required JSON object, "
+            "no other text.\n\n"
+            "Original Question: {{question}}\n\n"
+            "Candidate's Answer:\n{{candidate_answer}}\n\n"
+            "Missing Concepts: {{missing_concepts}}\n"
+            "Weaknesses: {{weaknesses}}\n"
+            "Competency: {{competency}}\n"
+            "Stage: {{stage}}\n"
+            "Difficulty: {{difficulty}}\n"
+            "Follow-up Level: {{followup_level}} of {{max_followups}}\n\n"
+            "Generate exactly one new follow-up question that narrowly "
+            "targets the missing concepts/weaknesses above, without "
+            "revealing the answer, without escalating difficulty, and "
+            "without repeating the original question or any prior "
+            "follow-up.\n\n"
+            "Return only this JSON object:\n"
+            "{\n"
+            '  "question": "",\n'
+            '  "missing_concept": "",\n'
+            '  "followup_reason": ""\n'
+            "}"
         ),
     }
 
@@ -785,7 +874,9 @@ class PromptService:
             candidate: Candidate attributes; must include ``name``.
                 May include ``experience_years`` and ``target_role``.
             question_record: A question dictionary as returned by
-                ``QuestionRepository`` (e.g. ``get_question``).
+                ``QuestionRepository`` (e.g. ``get_question``), or an
+                equivalent dictionary built by ``InterviewService``
+                for an AI-generated question.
             stage: Interview stage id (e.g. "S1"); validated against
                 the loaded ``stages.yaml`` reference data.
             competency: Competency id (e.g. "C1"); validated against
@@ -1035,6 +1126,215 @@ class PromptService:
         }
 
         return self._finalize_prompt(self.PROMPT_TYPE_FOLLOWUP, rendered, metadata)
+
+    # =======================================================
+    # Build Dynamic (AI-Generated) Question Prompt
+    # =======================================================
+
+    def build_dynamic_question_prompt(
+        self,
+        competency: str,
+        competency_description: str | None,
+        stage: str,
+        stage_objective: str | None,
+        difficulty: str,
+        candidate_experience: Any,
+        candidate_role: Any,
+        already_asked_topics: Sequence[str] | str | None = None,
+        question_history: Sequence[str] | str | None = None,
+    ) -> PromptResult:
+        """
+        Build the prompt used to ask Gemini to *generate* a brand-new
+        interview question, for use only when ``QuestionRepository``
+        has no matching question for the requested
+        competency/stage/difficulty/candidate profile.
+
+        This method only builds and validates the prompt text -- it
+        never calls Gemini itself. The caller (``InterviewService``)
+        is responsible for sending the returned prompt to
+        ``GeminiService.generate_json()`` and validating the AI's
+        output before using it.
+
+        Args:
+            competency: Competency id; validated against the loaded
+                ``competencies.yaml`` reference data.
+            competency_description: Human-readable description of the
+                competency, used to ground the generated question.
+                Falls back to "Not specified" when blank.
+            stage: Interview stage id; validated against the loaded
+                ``stages.yaml`` reference data.
+            stage_objective: Human-readable objective/description of
+                the stage. Falls back to "Not specified" when blank.
+            difficulty: Difficulty label; validated against the
+                loaded competency difficulty levels.
+            candidate_experience: Candidate's years of experience, or
+                any value convertible to a display string. Falls back
+                to "Not specified" when ``None``/empty.
+            candidate_role: Candidate's target role. Falls back to
+                "Not specified" when ``None``/empty.
+            already_asked_topics: Question texts already asked this
+                interview, so the model can avoid duplicating them.
+            question_history: Question ids already asked this
+                interview, for additional non-duplication context.
+
+        Returns:
+            The rendered dynamic-question-generation prompt with
+            metadata.
+
+        Raises:
+            PromptValidationError: If ``competency``, ``stage``, or
+                ``difficulty`` is not a recognized reference value.
+            PromptRenderError: If a required placeholder value is
+                missing.
+            PromptTokenLimitError: If the rendered prompt exceeds the
+                configured token budget.
+        """
+        self._validate_competency(competency)
+        self._validate_stage(stage)
+        self._validate_difficulty(difficulty)
+
+        context = {
+            "competency": competency,
+            "competency_description": (
+                str(competency_description).strip()
+                if competency_description
+                else "Not specified"
+            ),
+            "stage": stage,
+            "stage_objective": (
+                str(stage_objective).strip() if stage_objective else "Not specified"
+            ),
+            "difficulty": difficulty,
+            "candidate_experience": (
+                candidate_experience
+                if candidate_experience not in (None, "")
+                else "Not specified"
+            ),
+            "candidate_role": (
+                candidate_role if candidate_role not in (None, "") else "Not specified"
+            ),
+            "already_asked_topics": self._format_list(already_asked_topics),
+            "question_history": self._format_list(question_history),
+        }
+
+        rendered = self.render_template(
+            self._get_template(self.PROMPT_TYPE_DYNAMIC_QUESTION), context
+        )
+
+        metadata = {
+            "competency": competency,
+            "stage": stage,
+            "difficulty": difficulty,
+        }
+
+        return self._finalize_prompt(
+            self.PROMPT_TYPE_DYNAMIC_QUESTION, rendered, metadata
+        )
+
+    # =======================================================
+    # Build Dynamic (AI-Generated) Follow-up Prompt
+    # =======================================================
+
+    def build_dynamic_followup_prompt(
+        self,
+        original_question: str,
+        candidate_answer: str,
+        missing_concepts: Sequence[str] | str | None,
+        weaknesses: Sequence[str] | str | None,
+        competency: str,
+        stage: str,
+        difficulty: str,
+        followup_count: int,
+    ) -> PromptResult:
+        """
+        Build the prompt used to ask Gemini to *generate* a new
+        adaptive follow-up question, for use only when
+        ``QuestionRepository`` has no pre-authored follow-up for the
+        current question at the current follow-up level.
+
+        This method only builds and validates the prompt text -- it
+        never calls Gemini itself. The caller (``InterviewService``)
+        is responsible for sending the returned prompt to
+        ``GeminiService.generate_json()`` and validating the AI's
+        output before using it.
+
+        Args:
+            original_question: The original question text the
+                candidate answered.
+            candidate_answer: The candidate's answer text being
+                followed up on.
+            missing_concepts: Concepts the Evaluator Agent flagged as
+                not addressed.
+            weaknesses: Weaknesses the Evaluator Agent identified.
+            competency: Competency id; validated against the loaded
+                ``competencies.yaml`` reference data.
+            stage: Interview stage id; validated against the loaded
+                ``stages.yaml`` reference data.
+            difficulty: Difficulty label; validated against the
+                loaded competency difficulty levels.
+            followup_count: 1-indexed follow-up depth, bounded by the
+                platform's configured
+                ``adaptive_questioning.maximum_followups``.
+
+        Returns:
+            The rendered dynamic-follow-up-generation prompt with
+            metadata.
+
+        Raises:
+            PromptValidationError: If any input fails validation,
+                including ``followup_count`` exceeding the configured
+                maximum, or ``original_question`` being empty.
+            PromptRenderError: If a required placeholder value is
+                missing.
+            PromptTokenLimitError: If the rendered prompt exceeds the
+                configured token budget.
+        """
+        self._validate_competency(competency)
+        self._validate_stage(stage)
+        self._validate_difficulty(difficulty)
+
+        if not isinstance(original_question, str) or not original_question.strip():
+            raise PromptValidationError(
+                "original_question must be a non-empty string"
+            )
+        if not isinstance(candidate_answer, str):
+            raise PromptValidationError("candidate_answer must be a string")
+
+        max_followups = self._get_max_followups()
+        if not isinstance(followup_count, int) or isinstance(followup_count, bool):
+            raise PromptValidationError("followup_count must be an integer")
+        if followup_count < 1 or followup_count > max_followups:
+            raise PromptValidationError(
+                f"followup_count must be between 1 and {max_followups}, "
+                f"got {followup_count}"
+            )
+
+        context = {
+            "question": original_question.strip(),
+            "candidate_answer": candidate_answer.strip() or "[No answer provided]",
+            "missing_concepts": self._format_list(missing_concepts),
+            "weaknesses": self._format_list(weaknesses),
+            "competency": competency,
+            "stage": stage,
+            "difficulty": difficulty,
+            "followup_level": followup_count,
+            "max_followups": max_followups,
+        }
+
+        rendered = self.render_template(
+            self._get_template(self.PROMPT_TYPE_DYNAMIC_FOLLOWUP), context
+        )
+
+        metadata = {
+            "competency": competency,
+            "stage": stage,
+            "difficulty": difficulty,
+            "followup_level": followup_count,
+        }
+
+        return self._finalize_prompt(
+            self.PROMPT_TYPE_DYNAMIC_FOLLOWUP, rendered, metadata
+        )
 
     # =======================================================
     # Build Report Prompt
