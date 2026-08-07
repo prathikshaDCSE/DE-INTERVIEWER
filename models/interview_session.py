@@ -72,6 +72,14 @@ class AskedQuestion:
     question_record: dict[str, Any]
     asked_at: datetime
     followup_count: int = 0
+    question_source: str = "REPOSITORY"
+    is_dynamic: bool = False
+    fallback_reason: str | None = None
+    generation_attempt: int = 0
+    prompt_version: str = "1.0"
+    model: str = "gemini-3.6-flash"
+    temperature: float = 0.0
+    generated_at: str | None = None
 
 
 @dataclass
@@ -129,6 +137,11 @@ class InterviewSession:
         metadata: Free-form, non-sensitive bookkeeping (e.g. adaptive
             difficulty tracking per competency, last request id).
             Excluded from ``repr()`` to keep logs short.
+        generated_questions: Dynamic questions generated during this session.
+        generated_followups: Dynamic follow-ups generated during this session.
+        generated_question_count: Total dynamic primary questions generated.
+        generated_followup_count: Total dynamic follow-ups generated.
+        failed_generation_attempts: Count of failed generation retries.
     """
 
     session_id: str
@@ -139,6 +152,7 @@ class InterviewSession:
     current_stage: str | None = None
     current_competency: str | None = None
     current_question: AskedQuestion | None = None
+    question_source: str | None = None
     pending_followup_prompt_metadata: dict[str, Any] | None = None
 
     asked_questions: list[AskedQuestion] = field(default_factory=list)
@@ -158,6 +172,12 @@ class InterviewSession:
     status: InterviewStatus = InterviewStatus.IN_PROGRESS
 
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    generated_questions: list[dict[str, Any]] = field(default_factory=list)
+    generated_followups: list[dict[str, Any]] = field(default_factory=list)
+    generated_question_count: int = 0
+    generated_followup_count: int = 0
+    failed_generation_attempts: int = 0
 
     def __repr__(self) -> str:  # pragma: no cover
         return (

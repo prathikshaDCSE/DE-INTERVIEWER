@@ -62,7 +62,9 @@ from typing import Any, Mapping, Sequence
 
 from config.settings import settings as default_settings
 from exceptions.evaluation_exceptions import EvaluationServiceError
+from exceptions.gemini_exceptions import GeminiServiceError
 from exceptions.interview_exceptions import (
+    InterviewAIError,
     InterviewConfigurationError,
     InterviewEvaluationError,
     InterviewPromptError,
@@ -363,7 +365,8 @@ class InterviewService:
 
             question_payload: dict[str, Any] | None = None
             if session.status == InterviewStatus.IN_PROGRESS:
-                self._select_question(session)
+                req_id = self._make_request_id()
+                self._select_question(session, request_id=req_id)
                 question_payload = self._build_question(session)
 
         with self._stats_lock:
@@ -512,7 +515,8 @@ class InterviewService:
                 self._advance_stage_locked(session)
             if session.status != InterviewStatus.IN_PROGRESS:
                 return None
-            self._select_question(session)
+            req_id = self._make_request_id()
+            self._select_question(session, request_id=req_id)
             return self._build_question(session)
 
     def advance_stage(self, session_id: str) -> dict[str, Any]:
@@ -905,24 +909,54 @@ class InterviewService:
     # Internal Helpers -- Question selection / building
     # =======================================================
 
-    def _select_question(self, session: InterviewSession) -> None:
+    def _get_dynamic_gen_config(self) -> dict[str, Any]:
+        with self._config_lock:
+            ref_data = getattr(self.question_repository, "reference_data", {}) or {}
+        thresholds = ref_data.get("thresholds", {}) or {}
+        return thresholds.get("dynamic_generation", {}) or {}
+
+    def _get_difficulty_progression_config(self) -> dict[str, Any]:
+        with self._config_lock:
+            ref_data = getattr(self.question_repository, "reference_data", {}) or {}
+        thresholds = ref_data.get("thresholds", {}) or {}
+        return thresholds.get("difficulty_progression", {}) or {}
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Normalize text by converting to lowercase, removing punctuation, and collapsing whitespace."""
+        import string
+        if not text:
+            return ""
+        text_clean = text.lower().translate(str.maketrans("", "", string.punctuation))
+        return " ".join(text_clean.split())
+
+    def _select_question(
+        self, session: InterviewSession, request_id: str | None = None
+    ) -> None:
         """
         Select the next question for ``session.current_competency`` in
         ``session.current_stage``, avoiding duplicates, and set it as
         ``session.current_question``.
 
+        If QuestionRepository has a matching question, use it (source=REPOSITORY).
+        If QuestionRepository returns None, generate one via PromptService and
+        GeminiService (source=GEMINI) subject to session limits.
+
         Must be called while holding ``self._session_lock``.
 
         Raises:
-            InterviewQuestionError: No matching question is available,
-                or no competency remains to ask about.
+            InterviewQuestionError: No competency available to select a question for,
+                or repository failed.
+            InterviewPromptError: Dynamic question prompt could not be built.
+            InterviewAIError: AI question generation failed validation or retries.
         """
         if session.current_competency is None:
-           raise InterviewQuestionError(
+            raise InterviewQuestionError(
                 "No competency available to select a question for",
                 session_id=session.session_id,
             )
 
+        req_id = request_id or self._make_request_id()
         competency = session.current_competency
         difficulty = self._current_difficulty(session, competency)
 
@@ -942,14 +976,140 @@ class InterviewService:
                 f"Question repository failed: {exc}", session_id=session.session_id
             ) from exc
 
-        if question_record is None:
-            raise InterviewQuestionError(
-                "No matching question found for competency="
-                f"{competency} stage={session.current_stage} difficulty={difficulty}",
-                session_id=session.session_id,
+        if question_record is not None:
+            self.question_repository.mark_question_used(question_record["question_id"])
+            question_source = "REPOSITORY"
+            is_dynamic = False
+            fallback_reason = None
+            generation_attempt = 0
+            self.logger.info(
+                "repository_question_used",
+                extra={
+                    "request_id": req_id,
+                    "session_id": session.session_id,
+                    "competency": competency,
+                    "stage": session.current_stage,
+                    "difficulty": difficulty,
+                },
             )
+        else:
+            dyn_cfg = self._get_dynamic_gen_config()
+            max_gen = dyn_cfg.get("max_generated_questions_per_session", 5)
+            stop_failures = dyn_cfg.get("stop_generation_after_failures", 3)
 
-        self.question_repository.mark_question_used(question_record["question_id"])
+            if (
+                session.generated_question_count >= max_gen
+                or session.failed_generation_attempts >= stop_failures
+            ):
+                fallback_reason = "GENERATION_LIMIT_REACHED"
+                self.logger.warning(
+                    "Dynamic question generation limit reached; attempting repository reuse or safe fallback",
+                    extra={"session_id": session.session_id, "request_id": req_id},
+                )
+                try:
+                    question_record = self.question_repository.get_question(
+                        competency=competency,
+                        stage=session.current_stage,
+                        difficulty=difficulty,
+                        candidate_level=session.candidate.get(
+                            "candidate_level", _DEFAULT_CANDIDATE_LEVEL
+                        ),
+                        experience=session.candidate.get("experience_years", 0) or 0,
+                        exclude_used=False,
+                    )
+                except QuestionBankError:
+                    question_record = None
+
+                if question_record is None:
+                    generated_id = f"FALLBACK_Q_{uuid.uuid4().hex[:8]}"
+                    question_record = {
+                        "question_id": generated_id,
+                        "competency": competency,
+                        "stage": session.current_stage,
+                        "difficulty": difficulty,
+                        "question": f"Could you describe your core technical experience and key architectural principles related to {competency}?",
+                        "learning_objective": "General competency assessment",
+                        "business_context": "Safe fallback assessment",
+                        "expected_concepts": ["core concepts", "experience", "trade-offs"],
+                        "evaluator_notes": "Evaluate general clarity and technical foundation.",
+                        "positive_indicators": ["Structured answer", "Clear examples"],
+                        "negative_indicators": ["Vague response"],
+                        "estimated_time": 5,
+                        "is_ai_generated": False,
+                    }
+                question_source = "FALLBACK"
+                is_dynamic = False
+                generation_attempt = 0
+            else:
+                comp_cfg = self._get_competency(competency)
+                stage_cfg = self._get_stage(session.current_stage) if session.current_stage else {}
+                already_asked_topics = [
+                    q.question_record.get("question")
+                    for q in session.asked_questions
+                    if q.question_record and q.question_record.get("question")
+                ]
+                question_history = [q.question_id for q in session.asked_questions]
+
+                try:
+                    prompt_result = self.prompt_service.build_dynamic_question_prompt(
+                        competency=competency,
+                        competency_description=comp_cfg.get("description") or comp_cfg.get("name"),
+                        stage=session.current_stage,
+                        stage_objective=stage_cfg.get("objective") or stage_cfg.get("name"),
+                        difficulty=difficulty,
+                        candidate_experience=session.candidate.get("experience_years", "Not specified"),
+                        candidate_role=session.candidate.get("target_role", "Not specified"),
+                        already_asked_topics=already_asked_topics,
+                        question_history=question_history,
+                    )
+                except PromptServiceError as exc:
+                    raise InterviewPromptError(
+                        f"Failed to build dynamic question prompt: {exc}",
+                        session_id=session.session_id,
+                        request_id=req_id,
+                    ) from exc
+
+                validated_ai, generation_attempt = self._generate_and_validate_question(
+                    session=session,
+                    competency=competency,
+                    stage=session.current_stage,
+                    difficulty=difficulty,
+                    prompt_text=prompt_result.prompt,
+                    request_id=req_id,
+                )
+                generated_id = f"AI_Q_{uuid.uuid4().hex[:8]}"
+                question_record = {
+                    "question_id": generated_id,
+                    "competency": competency,
+                    "stage": session.current_stage,
+                    "difficulty": difficulty,
+                    "question": validated_ai["question"],
+                    "learning_objective": validated_ai.get("learning_objective", ""),
+                    "business_context": validated_ai.get("business_context", ""),
+                    "expected_concepts": validated_ai.get("expected_concepts", []),
+                    "evaluator_notes": validated_ai.get("evaluator_notes", ""),
+                    "positive_indicators": validated_ai.get("positive_indicators", []),
+                    "negative_indicators": validated_ai.get("negative_indicators", []),
+                    "estimated_time": validated_ai.get("estimated_time", 5),
+                    "is_ai_generated": True,
+                }
+                session.generated_questions.append(question_record)
+                session.generated_question_count += 1
+
+                question_source = "AI_GENERATED"
+                is_dynamic = True
+                fallback_reason = "REPOSITORY_EMPTY"
+                self.logger.info(
+                    "generated_question_used",
+                    extra={
+                        "request_id": req_id,
+                        "session_id": session.session_id,
+                        "competency": competency,
+                        "stage": session.current_stage,
+                        "difficulty": difficulty,
+                        "attempt": generation_attempt,
+                    },
+                )
 
         asked = AskedQuestion(
             question_id=question_record["question_id"],
@@ -958,8 +1118,17 @@ class InterviewService:
             difficulty=difficulty,
             question_record=question_record,
             asked_at=datetime.now(timezone.utc),
+            question_source=question_source,
+            is_dynamic=is_dynamic,
+            fallback_reason=fallback_reason,
+            generation_attempt=generation_attempt,
+            prompt_version=PromptService.TEMPLATE_VERSION,
+            model=getattr(self.gemini_service, "model", "gemini-3.6-flash"),
+            temperature=float(self._get_dynamic_gen_config().get("temperature", 0.1)),
+            generated_at=datetime.now(timezone.utc).isoformat() if is_dynamic else None,
         )
         session.current_question = asked
+        session.question_source = question_source
         session.pending_followup_prompt_metadata = None
         session.asked_questions.append(asked)
         session.questions_asked_in_stage += 1
@@ -990,19 +1159,35 @@ class InterviewService:
     def _adapt_difficulty(
         self, session: InterviewSession, question_record: Mapping[str, Any], score: int
     ) -> None:
-        """Adjust the next difficulty for a competency based on a score, per the
-        question's own configured ``next_difficulty_if_score_ge_4`` /
-        ``next_difficulty_if_score_le_2`` guidance."""
+        """Adjust the next difficulty for a competency based on score, checking
+        thresholds.yaml difficulty_progression configuration or question record guidance."""
         competency = question_record.get("competency")
         if not competency:
             return
 
+        diff_cfg = self._get_difficulty_progression_config()
+        increase_thresh = diff_cfg.get("increase_threshold", 4)
+        decrease_thresh = diff_cfg.get("decrease_threshold", 2)
+
         levels = self._get_competency(competency).get("difficulty_levels", [])
         next_difficulty: str | None = None
-        if score >= 4:
+
+        if score >= increase_thresh:
             next_difficulty = question_record.get("next_difficulty_if_score_ge_4")
-        elif score <= 2:
+            if not next_difficulty and levels:
+                curr = self._current_difficulty(session, competency)
+                if curr == "Easy" and "Medium" in levels:
+                    next_difficulty = "Medium"
+                elif curr == "Medium" and "Hard" in levels:
+                    next_difficulty = "Hard"
+        elif score <= decrease_thresh:
             next_difficulty = question_record.get("next_difficulty_if_score_le_2")
+            if not next_difficulty and levels:
+                curr = self._current_difficulty(session, competency)
+                if curr == "Hard" and "Medium" in levels:
+                    next_difficulty = "Medium"
+                elif curr == "Medium" and "Easy" in levels:
+                    next_difficulty = "Easy"
 
         if next_difficulty and next_difficulty in levels:
             session.metadata.setdefault("difficulty_by_competency", {})[
@@ -1045,6 +1230,10 @@ class InterviewService:
             "competency": asked.competency,
             "stage": asked.stage,
             "difficulty": asked.difficulty,
+            "question_source": asked.question_source,
+            "is_dynamic": asked.is_dynamic,
+            "fallback_reason": asked.fallback_reason,
+            "generation_attempt": asked.generation_attempt,
         }
 
     @staticmethod
@@ -1093,6 +1282,7 @@ class InterviewService:
                 stage=asked.stage,
                 difficulty=asked.difficulty,
                 current_followup_count=followup_count,
+                question_record=asked.question_record,
                 **gemini_overrides,
             )
         except EvaluationServiceError as exc:
@@ -1139,29 +1329,126 @@ class InterviewService:
                 "",
             )
 
-            try:
-                prompt_result = self.prompt_service.build_followup_prompt(
-                    previous_answer=previous_answer,
-                    question_record=asked.question_record,
-                    followup_level=followup_level,
-                    missing_concept=missing_concept,
-                    followup_reason=reason,
-                )
-            except PromptServiceError as exc:
-                raise InterviewPromptError(
-                    f"Failed to build follow-up prompt: {exc}",
-                    session_id=session.session_id,
-                    request_id=request_id,
-                ) from exc
+            repo_followup = self.question_repository.get_followup_question(
+                asked.question_id, followup_level
+            )
 
+            if repo_followup is not None and str(repo_followup).strip() != "":
+                question_source = "REPOSITORY"
+                is_dynamic = False
+                fallback_reason = None
+                generation_attempt = 0
+                self.logger.info(
+                    "repository_followup_used",
+                    extra={
+                        "request_id": request_id,
+                        "session_id": session.session_id,
+                        "competency": asked.competency,
+                        "stage": asked.stage,
+                        "difficulty": asked.difficulty,
+                    },
+                )
+                try:
+                    prompt_result = self.prompt_service.build_followup_prompt(
+                        previous_answer=previous_answer,
+                        question_record=asked.question_record,
+                        followup_level=followup_level,
+                        missing_concept=missing_concept,
+                        followup_reason=reason,
+                    )
+                except PromptServiceError as exc:
+                    raise InterviewPromptError(
+                        f"Failed to build follow-up prompt: {exc}",
+                        session_id=session.session_id,
+                        request_id=request_id,
+                    ) from exc
+                followup_prompt_text = prompt_result.prompt
+            else:
+                dyn_cfg = self._get_dynamic_gen_config()
+                max_f = dyn_cfg.get("max_generated_followups_per_session", 10)
+                stop_failures = dyn_cfg.get("stop_generation_after_failures", 3)
+                default_fallback = dyn_cfg.get("validation", {}).get(
+                    "default_fallback_followup"
+                ) or "Could you elaborate further on the technical details and trade-offs of your approach?"
+
+                if (
+                    session.generated_followup_count >= max_f
+                    or session.failed_generation_attempts >= stop_failures
+                ):
+                    followup_prompt_text = default_fallback
+                    question_source = "FALLBACK"
+                    is_dynamic = False
+                    fallback_reason = "GENERATION_LIMIT_REACHED"
+                    generation_attempt = 0
+                else:
+                    try:
+                        prompt_result = self.prompt_service.build_dynamic_followup_prompt(
+                            original_question=asked.question_record.get("question", ""),
+                            candidate_answer=previous_answer,
+                            missing_concepts=evaluation.missing_concepts or [missing_concept],
+                            weaknesses=evaluation.weaknesses,
+                            competency=asked.competency,
+                            stage=asked.stage,
+                            difficulty=asked.difficulty,
+                            followup_count=followup_level,
+                        )
+                    except PromptServiceError as exc:
+                        raise InterviewPromptError(
+                            f"Failed to build dynamic follow-up prompt: {exc}",
+                            session_id=session.session_id,
+                            request_id=request_id,
+                        ) from exc
+
+                    validated_ai_followup, generation_attempt = self._generate_and_validate_followup(
+                        session=session,
+                        asked=asked,
+                        followup_level=followup_level,
+                        missing_concept=missing_concept,
+                        prompt_text=prompt_result.prompt,
+                        request_id=request_id,
+                    )
+                    followup_prompt_text = validated_ai_followup["question"]
+                    session.generated_followups.append({
+                        "followup_id": f"AI_F_{uuid.uuid4().hex[:8]}",
+                        "question_id": asked.question_id,
+                        "followup_level": followup_level,
+                        "question": followup_prompt_text,
+                        "missing_concept": missing_concept,
+                        "is_ai_generated": True,
+                    })
+                    session.generated_followup_count += 1
+                    question_source = "AI_GENERATED"
+                    is_dynamic = True
+                    fallback_reason = "NO_FOLLOWUP"
+                    self.logger.info(
+                        "generated_followup_used",
+                        extra={
+                            "request_id": request_id,
+                            "session_id": session.session_id,
+                            "competency": asked.competency,
+                            "stage": asked.stage,
+                            "difficulty": asked.difficulty,
+                        },
+                    )
+
+            session.question_source = question_source
             session.pending_followup_prompt_metadata = {
                 "followup_level": followup_level,
                 "missing_concept": missing_concept,
+                "question_source": question_source,
+                "is_dynamic": is_dynamic,
+                "fallback_reason": fallback_reason,
+                "generation_attempt": generation_attempt,
             }
+            session.metadata.setdefault("previous_followup_prompts", []).append(followup_prompt_text)
 
             return {
                 "next_action": "FOLLOWUP",
-                "question": prompt_result.prompt,
+                "question": followup_prompt_text,
+                "question_source": question_source,
+                "is_dynamic": is_dynamic,
+                "fallback_reason": fallback_reason,
+                "generation_attempt": generation_attempt,
                 "evaluation": evaluation.to_dict(),
                 "progress": self.get_progress_locked(session),
             }
@@ -1189,15 +1476,204 @@ class InterviewService:
         else:
             next_action_label = "NEXT_QUESTION"
 
-        self._select_question(session)
+        self._select_question(session, request_id=request_id)
         question_payload = self._build_question(session)
 
         return {
             "next_action": next_action_label,
             "question": question_payload["prompt"],
+            "question_source": question_payload.get("question_source"),
+            "is_dynamic": question_payload.get("is_dynamic", False),
+            "fallback_reason": question_payload.get("fallback_reason"),
+            "generation_attempt": question_payload.get("generation_attempt", 0),
             "evaluation": evaluation.to_dict(),
             "progress": self.get_progress_locked(session),
         }
+
+    # =======================================================
+    # Internal Helpers -- AI Generation & Validation
+    # =======================================================
+
+    def _generate_and_validate_question(
+        self,
+        session: InterviewSession,
+        competency: str,
+        stage: str,
+        difficulty: str,
+        prompt_text: str,
+        request_id: str,
+    ) -> tuple[dict[str, Any], int]:
+        dyn_cfg = self._get_dynamic_gen_config()
+        max_retries = dyn_cfg.get("max_retry_attempts", getattr(self.gemini_service, "_max_retries", 3))
+        total_attempts = max(1, max_retries + 1)
+        max_len = dyn_cfg.get("validation", {}).get("max_word_count", 500) * 10
+
+        last_exc: Exception | None = None
+        for attempt in range(1, total_attempts + 1):
+            try:
+                raw_json = self.gemini_service.generate_json(prompt_text)
+                validated = self._validate_generated_question(
+                    data=raw_json,
+                    requested_competency=competency,
+                    requested_difficulty=difficulty,
+                    asked_questions=session.asked_questions,
+                    max_length=max_len,
+                )
+                return validated, attempt
+            except (GeminiServiceError, InterviewValidationError, ValueError, TypeError) as exc:
+                last_exc = exc
+                self.logger.warning(
+                    "AI question generation attempt %d/%d failed: %s",
+                    attempt,
+                    total_attempts,
+                    exc,
+                    extra={
+                        "request_id": request_id,
+                        "session_id": session.session_id,
+                        "competency": competency,
+                        "stage": stage,
+                        "difficulty": difficulty,
+                    },
+                )
+
+        raise InterviewAIError(
+            f"AI question generation failed after {total_attempts} attempts: {last_exc}",
+            session_id=session.session_id,
+            request_id=request_id,
+        ) from last_exc
+
+    def _validate_generated_question(
+        self,
+        data: Any,
+        requested_competency: str,
+        requested_difficulty: str,
+        asked_questions: Sequence[AskedQuestion],
+        max_length: int = 1000,
+    ) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise InterviewValidationError("Generated question output must be a JSON object")
+
+        required_fields = ["question", "competency", "difficulty", "estimated_time"]
+        for key in required_fields:
+            if key not in data or data[key] is None or (isinstance(data[key], str) and not data[key].strip()):
+                raise InterviewValidationError(f"Missing required field in generated question: {key}")
+
+        question = str(data["question"]).strip()
+        if not question:
+            raise InterviewValidationError("Question text must not be empty")
+
+        if len(question) > max_length:
+            raise InterviewValidationError(
+                f"Question length ({len(question)} chars) exceeds maximum configured length ({max_length})"
+            )
+
+        evaluator_notes = str(data.get("evaluator_notes", "")).strip().lower()
+        if evaluator_notes and len(evaluator_notes) > 5 and evaluator_notes in question.lower():
+            raise InterviewValidationError("Generated question text must not contain the answer")
+
+        norm_question = self._normalize_text(question)
+        for asked in asked_questions:
+            prev_q = asked.question_record.get("question") if asked.question_record else None
+            if prev_q and norm_question == self._normalize_text(str(prev_q)):
+                raise InterviewValidationError("Generated question duplicates an already asked question")
+
+        ai_competency = str(data["competency"]).strip()
+        if ai_competency != requested_competency:
+            raise InterviewValidationError(
+                f"Generated competency '{ai_competency}' does not match requested '{requested_competency}'"
+            )
+
+        ai_difficulty = str(data["difficulty"]).strip()
+        if ai_difficulty != requested_difficulty:
+            raise InterviewValidationError(
+                f"Generated difficulty '{ai_difficulty}' does not match requested '{requested_difficulty}'"
+            )
+
+        return data
+
+    def _generate_and_validate_followup(
+        self,
+        session: InterviewSession,
+        asked: AskedQuestion,
+        followup_level: int,
+        missing_concept: str,
+        prompt_text: str,
+        request_id: str,
+    ) -> tuple[dict[str, Any], int]:
+        dyn_cfg = self._get_dynamic_gen_config()
+        max_retries = dyn_cfg.get("max_retry_attempts", getattr(self.gemini_service, "_max_retries", 3))
+        total_attempts = max(1, max_retries + 1)
+
+        previous_followups: list[str] = session.metadata.get("previous_followup_prompts", [])
+
+        last_exc: Exception | None = None
+        for attempt in range(1, total_attempts + 1):
+            try:
+                raw_json = self.gemini_service.generate_json(prompt_text)
+                validated = self._validate_generated_followup(
+                    data=raw_json,
+                    target_missing_concept=missing_concept,
+                    previous_followups=previous_followups,
+                )
+                return validated, attempt
+            except (GeminiServiceError, InterviewValidationError, ValueError, TypeError) as exc:
+                last_exc = exc
+                self.logger.warning(
+                    "AI follow-up generation attempt %d/%d failed: %s",
+                    attempt,
+                    total_attempts,
+                    exc,
+                    extra={
+                        "request_id": request_id,
+                        "session_id": session.session_id,
+                        "competency": asked.competency,
+                        "stage": asked.stage,
+                        "difficulty": asked.difficulty,
+                    },
+                )
+
+        raise InterviewAIError(
+            f"AI follow-up generation failed after {total_attempts} attempts: {last_exc}",
+            session_id=session.session_id,
+            request_id=request_id,
+        ) from last_exc
+
+    def _validate_generated_followup(
+        self,
+        data: Any,
+        target_missing_concept: str,
+        previous_followups: Sequence[str],
+    ) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise InterviewValidationError("Generated follow-up output must be a JSON object")
+
+        if not data.get("question") or not str(data["question"]).strip():
+            raise InterviewValidationError("Follow-up question text must not be empty")
+
+        missing_concept = str(
+            data.get("missing_concept")
+            or data.get("missing_concepts")
+            or target_missing_concept
+            or ""
+        ).strip()
+        if not missing_concept:
+            raise InterviewValidationError("Follow-up missing concept must not be empty")
+        data["missing_concept"] = missing_concept
+
+        followup_reason = str(
+            data.get("followup_reason") or data.get("reason") or "followup needed"
+        ).strip()
+        if not followup_reason:
+            raise InterviewValidationError("Follow-up reason must not be empty")
+        data["followup_reason"] = followup_reason
+
+        question = str(data["question"]).strip()
+        norm_question = self._normalize_text(question)
+        for prev in previous_followups:
+            if norm_question == self._normalize_text(str(prev)):
+                raise InterviewValidationError("Generated follow-up repeats a previous follow-up question")
+
+        return data
 
     def _update_progress(
         self, session: InterviewSession, evaluation: EvaluationResult

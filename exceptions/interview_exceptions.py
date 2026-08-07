@@ -265,6 +265,18 @@ class InterviewReportError(InterviewServiceError):
 
 
 # ============================================================
+# AI Generation
+# ============================================================
+
+
+class InterviewAIError(InterviewServiceError):
+    """
+    Raised when AI generation of a question or follow-up fails validation
+    or fails after retries with GeminiService.
+    """
+
+
+# ============================================================
 # Public re-exports
 # ============================================================
 
@@ -277,4 +289,5 @@ __all__ = [
     "InterviewPromptError",
     "InterviewEvaluationError",
     "InterviewReportError",
-]
+    "InterviewAIError",
+]
